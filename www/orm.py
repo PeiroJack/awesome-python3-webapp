@@ -16,16 +16,16 @@ async def create_pool(loop, **kw):
     # 使用连接池的好处是不必频繁地打开和关闭数据库连接，而是能复用就尽量复用。
     global __pool
     __pool = await aiomysql.create_pool(
-        host=kw.get('host', 'localhost'),
-        port=kw.get('port', 3306),
-        user=kw['user'],
-        password=kw['password'],
-        db=kw['db'],
-        charset=kw.get('charset', 'utf8'),
-        autocommit=kw.get('autocommit', True),
-        maxsize=kw.get('maxsize', 10),
-        minsize=kw.get('minsize', 1),
-        loop=loop
+        host=kw.get('host', 'localhost'), #IP
+        port=kw.get('port', 3306), # 端口
+        user=kw['user'], # 用户名
+        password=kw['password'], # 密码
+        db=kw['db'], # 要连接的数据库
+        charset=kw.get('charset', 'utf8'), # 字符集
+        autocommit=kw.get('autocommit', True), # 自动提交
+        maxsize=kw.get('maxsize', 10), # 最大数
+        minsize=kw.get('minsize', 1), # 最小数
+        loop=loop # EventLoop
     )
 
 # 查询
@@ -50,6 +50,7 @@ async def select(sql, args, size=None):
 async def execute(sql, args, autocommit=True):
     log(sql)
     async with __pool.get() as conn:
+        # 如果 autocommit 为False，等待执行 conn.begin()
         if not autocommit:
             await conn.begin()
         try:
@@ -71,12 +72,15 @@ async def execute(sql, args, autocommit=True):
         return affected
 
 # 创建 参数列表字符串 的工具类
+# num 为创建？的数量
 def create_args_string(num):
     L = []
     for n in range(num):
         L.append('?')
     return ', '.join(L)
 
+
+# Field 字段 及其 子类
 class Field(object):
     # 初始化
     def __init__(self, name, column_type, primary_key, default):
@@ -113,17 +117,25 @@ class TextField(Field):
     def __init__(self, name=None, default=None):
         super().__init__(name, 'text', False, default)
 
+
+
+# 模板元类 是类的模板，所以必须从`type`类型派生：
 class ModelMetaclass(type):
 
     def __new__(cls, name, bases, attrs):
         if name=='Model':
             return type.__new__(cls, name, bases, attrs)
+        # 获取 表名
         tableName = attrs.get('__table__', None) or name
+        # 打印 类名 和表名
         logging.info('found model: %s (table: %s)' % (name, tableName))
-        mappings = dict()
-        fields = []
-        primaryKey = None
+        
+        mappings = dict() # 空字典
+        fields = [] # 字段数组
+        primaryKey = None # 是否为关键字段
+        # 把 attrs属性集合 中属于 Field类的属性 添加到 fields[]
         for k, v in attrs.items():
+            # 是否为 Field 类
             if isinstance(v, Field):
                 logging.info('  found mapping: %s ==> %s' % (k, v))
                 mappings[k] = v
@@ -134,21 +146,31 @@ class ModelMetaclass(type):
                     primaryKey = k
                 else:
                     fields.append(k)
+        # 没找到主键， 抛出 StandardError
         if not primaryKey:
             raise StandardError('Primary key not found.')
+        # 把attrs字典中 key 属于 Field类的键值对 出栈
         for k in mappings.keys():
             attrs.pop(k)
+        # 出栈的字段列表
         escaped_fields = list(map(lambda f: '`%s`' % f, fields))
+
         attrs['__mappings__'] = mappings # 保存属性和列的映射关系
-        attrs['__table__'] = tableName
+        attrs['__table__'] = tableName # 表名
         attrs['__primary_key__'] = primaryKey # 主键属性名
         attrs['__fields__'] = fields # 除主键外的属性名
         attrs['__select__'] = 'select `%s`, %s from `%s`' % (primaryKey, ', '.join(escaped_fields), tableName)
         attrs['__insert__'] = 'insert into `%s` (%s, `%s`) values (%s)' % (tableName, ', '.join(escaped_fields), primaryKey, create_args_string(len(escaped_fields) + 1))
         attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (tableName, ', '.join(map(lambda f: '`%s`=?' % (mappings.get(f).name or f), fields)), primaryKey)
         attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primaryKey)
+        # __new__()方法接收到的参数依次是：
+        # cls ：当前准备创建的类的对象；
+        # name ：类的名字
+        # bases：类继承的父类集合
+        # attrs：类的方法集合
         return type.__new__(cls, name, bases, attrs)
 
+# 模板类 父类：字典类， 模板元类
 class Model(dict, metaclass=ModelMetaclass):
 
     def __init__(self, **kw):
